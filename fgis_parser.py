@@ -37,130 +37,225 @@ def reload_initial_page(driver, max_attempts=3):
 
 def process_record(driver, data, index, df, excel_file_path):
     try:
-        # Ожидание и заполнение поля ввода
+        # Очищаем предыдущие значения
+        df.at[index, 'name'] = None
+        df.at[index, 'mpi'] = None
+        df.at[index, 'manufacturer'] = None
+
+        # Поиск и ввод регистрационного номера
         input_field = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input.form-control'))
-        )
+    EC.presence_of_element_located((By.CSS_SELECTOR, 'input.form-control'))
+)
         input_field.clear()
-        input_field.send_keys(data)
+        input_field.send_keys(data)  # data содержит текущий регистрационный номер (например "3345-09")
         input_field.send_keys(Keys.RETURN)
 
-        # Ожидание появления элемента с текстом
-        WebDriverWait(driver, 30).until(
-            EC.text_to_be_present_in_element((By.XPATH, f"//span[text()='{data}']"), data)
+        # Клик по кнопке поиска
+        search_button = WebDriverWait(driver, 30).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, '.fa.fa-search'))
         )
+        search_button.click()
 
-        # Ожидание таблицы
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CLASS_NAME, 'reactable-data'))
-        )
+#########
+        # Находит конкретную строку с нужным номером
+        try:
+            # Используем более точный XPath для поиска
+            target_row = WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.XPATH, f'//tr[.//td[1][normalize-space()="{data}"]]'))
+            )
+            
+            # Прокручиваем к найденной строке
+            driver.execute_script("arguments[0].scrollIntoView();", target_row)
+            time.sleep(0.5)
+            
+            # Двойной клик по строке
+            webdriver.ActionChains(driver).double_click(target_row).perform()
+            
+        except Exception as e:
+            print(f"Не удалось найти строку с номером {data}: {e}")
+            # Для отладки выведем все номера из таблицы
+            all_rows = driver.find_elements(By.CSS_SELECTOR, 'table.table tr')
+            print("Найденные номера в таблице:")
+            for row in all_rows[1:]:  # Пропускаем заголовок
+                cells = row.find_elements(By.TAG_NAME, 'td')
+                if cells:
+                    print(f"- {cells[0].text.strip()}")
 
-        # Поиск и клик по кнопке
-        btt = driver.find_elements(By.CSS_SELECTOR, 'tbody.reactable-data tr')
-        for bt in btt:
-            reg_cell = bt.find_element(By.CSS_SELECTOR, 'td:nth-child(1) span')
-            if reg_cell.text.strip() == data:
-                button = bt.find_element(By.CSS_SELECTOR, 'button.btn.btn-xs.btn-info')
-                button.click()
-                break
+#########
+        # Извлечение наименования
+        try:
+            name_table = WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table.table.table-striped.table-2columns'))
+            )
+            rows = name_table.find_elements(By.CSS_SELECTOR, 'tbody tr')
+            for row in rows:
+                cells = row.find_elements(By.TAG_NAME, 'td')
+                if len(cells) >= 2 and cells[0].text.strip() == "Наименование":
+                    df.at[index, 'name'] = cells[1].text.strip()
+                    break
+        except Exception as e:
+            print(f"Ошибка при извлечении наименования: {e}")
 
-        # Ожидание детальной информации
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CLASS_NAME, 'reactable-data'))
-        )
+        # Извлечение МПИ (с возможностью пропуска если вкладка не найдена)
+        try:
+            # Пытаемся найти вкладку
+            mpi_tab = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, 
+                    '//div[contains(@class, "tabhead") and contains(., "Межповерочный интервал")]'))
+            )
+            mpi_tab.click()
+            
+            # Пытаемся загрузить таблицу
+            mpi_table = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table.table-striped.subtabTable'))
+            )
 
-        # Извлечение данных
-        rows = driver.find_elements(By.CSS_SELECTOR, 'tbody.reactable-data tr')
-        if len(rows) >= 2:
-            second_row_cells = rows[1].find_elements(By.CSS_SELECTOR, 'td[label="Значение"]')
-            if second_row_cells:
-                df.at[index, 'name'] = second_row_cells[0].text
+            # Список для хранения всех найденных значений МПИ
+            mpi_values = []
+            
+            # Анализ строк таблицы
+            mpi_rows = mpi_table.find_elements(By.CSS_SELECTOR, 'tr.borderBetweenChildren')
+            
+            for row in mpi_rows:
+                try:
+                    cells = row.find_elements(By.TAG_NAME, 'td')
+                    if len(cells) >= 2 and any(word in cells[1].text.lower() for word in ['год', 'лет', 'день']):
+                        mpi_value = cells[1].text.strip()
+                        mpi_values.append(mpi_value)
+                        print(f"Найден МПИ: {mpi_value}")
+                except Exception as e:
+                    continue
+            
+            # Сохраняем все значения через запятую или выбираем нужное
+            if mpi_values:
+                df.at[index, 'mpi'] = ', '.join(mpi_values)  # или выбрать первое/последнее/максимальное значение
+                print(f"Все найденные МПИ: {df.at[index, 'mpi']}")
 
-        manufacturer_elements = driver.find_elements(By.CSS_SELECTOR, 'td[label="Название"]')
-        for element in manufacturer_elements:
-            if element.text == "Изготовитель":
-                parent_row = element.find_element(By.XPATH, '..')
-                manufacturer_span = parent_row.find_element(By.CSS_SELECTOR, 'td[label="Значение"] span')
-                if manufacturer_span:
-                    df.at[index, 'manufacturer'] = manufacturer_span.text
+        except Exception as e:
+            print(f"Вкладка МПИ не найдена или другие проблемы с МПИ: {e}")
 
-        mpi_elements = driver.find_elements(By.CSS_SELECTOR, 'td[label="Название"]')
-        for mpi in mpi_elements:
-            if mpi.text == "МПИ":
-                parent_row = mpi.find_element(By.XPATH, '..')
-                second_mpi_cells = parent_row.find_elements(By.CSS_SELECTOR, 'td[label="Значение"]')
-                if second_mpi_cells:
-                    df.at[index, 'mpi'] = second_mpi_cells[0].text
+#########
+        # Извлечение информации о производителе
+        try:
+            manufacturer_tab = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((By.XPATH, 
+                    '//div[contains(@class, "tabhead") and contains(., "Изготовители")]'))
+            )
+            manufacturer_tab.click()
 
-        df.to_excel(excel_file_path, index=False)
-        print(f"Данные для записи {index + 1} успешно обработаны.")
-        return True
+            manufacturer_table = WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table.table-striped.subtabTable'))
+            )
+
+            manufacturers = []
+            manufacturer_rows = manufacturer_table.find_elements(By.CSS_SELECTOR, 'tr.borderBetweenChildren')
+            
+            for row in manufacturer_rows:
+                try:
+                    # Пропускаем строку с заголовками
+                    if "Наименование организации" in row.text and "ИНН" in row.text:
+                        continue
+                        
+                    cells = row.find_elements(By.TAG_NAME, 'td')
+                    if len(cells) >= 3:  # Проверяем наличие нужных столбцов
+                        name = cells[0].text.strip()
+                        address = cells[2].text.strip()
+                        
+                        if name and address:
+                            manufacturer_info = f"{name}, {address}"
+                            manufacturers.append(manufacturer_info)
+                        elif name:
+                            manufacturers.append(name)
+                            
+                except Exception as e:
+                    print(f"Ошибка обработки строки производителя: {e}")
+                    continue
+            
+            if manufacturers:
+                df.at[index, 'manufacturer'] = " | ".join(manufacturers)
+                print(f"Найдены производители: {df.at[index, 'manufacturer']}")
+            else:
+                print("Не удалось извлечь данные о производителях")
+                df.at[index, 'manufacturer'] = None
+
+        except Exception as e:
+            print(f"Ошибка при извлечении информации о производителях: {e}")
+            df.at[index, 'manufacturer'] = None
+
+        # Сохранение в Excel
+        try:
+            df.to_excel(excel_file_path, index=False, engine='openpyxl')
+            print(f"Данные для {data} успешно сохранены.")
+            return True
+        except Exception as e:
+            print(f"Ошибка при сохранении в Excel: {e}")
+            return False
 
     except Exception as e:
-        print(f"Ошибка при обработке записи {index + 1} ({data}): {e}")
+        print(f"Общая ошибка при обработке записи {index + 1} ({data}): {e}")
         return False
 
 # Основной код
-chrome_options = Options()
-service = Service(ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service, options=chrome_options)
+if __name__ == "__main__":
+    chrome_options = Options()
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
 
-excel_file_path = select_file()
-if not excel_file_path:
-    print("Файл не выбран. Программа завершена.")
+    excel_file_path = select_file()
+    if not excel_file_path:
+        print("Файл не выбран. Программа завершена.")
+        driver.quit()
+        exit()
+
+    df = pd.read_excel(excel_file_path)
+
+    # Инициализация столбцов
+    for col in ['name', 'mpi', 'manufacturer']:
+        if col not in df.columns:
+            df[col] = None
+
+    if 'Рег. Номер' not in df.columns:
+        print("Отсутствует столбец 'Рег. Номер'")
+        driver.quit()
+        exit()
+
+    data_list = df['Рег. Номер'].dropna().tolist()
+
+    if not reload_initial_page(driver):
+        print("Не удалось загрузить начальную страницу")
+        driver.quit()
+        exit()
+
+    max_retries = 3
+
+    for index, data in enumerate(data_list):
+        if pd.notna(df.at[index, 'name']) and pd.notna(df.at[index, 'mpi']) and pd.notna(df.at[index, 'manufacturer']):
+            print(f"Запись {index + 1} уже обработана, пропускаем.")
+            continue
+
+        print(f"\nНачало обработки записи {index + 1}: {data}")
+        retry_count = 0
+        success = False
+
+        while not success and retry_count < max_retries:
+            if retry_count > 0:
+                print(f"Повторная попытка {retry_count} для записи {index + 1}")
+
+            success = process_record(driver, data, index, df, excel_file_path)
+            
+            if success:
+                if not reload_initial_page(driver):
+                    print("Не удалось вернуться на начальную страницу")
+                    break
+            else:
+                retry_count += 1
+                if not reload_initial_page(driver):
+                    print("Не удалось перезагрузить страницу. Прекращаем попытки.")
+                    break
+                time.sleep(2)
+
+        if not success:
+            print(f"Не удалось обработать запись {index + 1} после {max_retries} попыток")
+
     driver.quit()
-    exit()
-
-df = pd.read_excel(excel_file_path)
-
-# Инициализация столбцов, если их нет
-for col in ['name', 'mpi', 'manufacturer']:
-    if col not in df.columns:
-        df[col] = None
-
-if 'Рег. Номер' not in df.columns:
-    print("Отсутствует столбец 'Рег. Номер'")
-    driver.quit()
-    exit()
-
-data_list = df['Рег. Номер'].dropna().tolist()
-
-if not reload_initial_page(driver):
-    print("Не удалось загрузить начальную страницу")
-    driver.quit()
-    exit()
-
-max_retries = 3  # Максимальное количество попыток обработки одной записи
-
-for index, data in enumerate(data_list):
-    if pd.notna(df.at[index, 'name']) and pd.notna(df.at[index, 'mpi']) and pd.notna(df.at[index, 'manufacturer']):
-        print(f"Запись {index + 1} уже обработана, пропускаем.")
-        continue
-
-    print(f"\nНачало обработки записи {index + 1}: {data}")
-    retry_count = 0
-    success = False
-
-    while not success and retry_count < max_retries:
-        if retry_count > 0:
-            print(f"Повторная попытка {retry_count} для записи {index + 1}")
-
-        success = process_record(driver, data, index, df, excel_file_path)
-        
-        if success:
-            # После успешной обработки возвращаемся на начальную страницу
-            if not reload_initial_page(driver):
-                print("Не удалось вернуться на начальную страницу")
-                break
-        else:
-            retry_count += 1
-            if not reload_initial_page(driver):
-                print("Не удалось перезагрузить страницу. Прекращаем попытки.")
-                break
-            time.sleep(2)
-
-    if not success:
-        print(f"Не удалось обработать запись {index + 1} после {max_retries} попыток")
-
-driver.quit()
-print("Обработка всех записей завершена.")
+    print("\nОбработка всех записей завершена.")
